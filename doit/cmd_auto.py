@@ -5,6 +5,7 @@ import os
 import time
 import sys
 from multiprocessing import Process
+from subprocess import call
 
 from .exceptions import InvalidCommand
 from .cmdparse import CmdParse
@@ -19,6 +20,22 @@ opt_reporter = {
     'long': None,
     'type':str,
     'default': 'executed-only',
+}
+
+opt_success = {
+    'name':'success_callback',
+    'short': None,
+    'long': 'success',
+    'type':str,
+    'default': '',
+}
+
+opt_failure = {
+    'name':'failure_callback',
+    'short': None,
+    'long': 'failure',
+    'type':str,
+    'default': '',
 }
 
 
@@ -36,7 +53,7 @@ class Auto(DoitCmdBase):
     doc_description = None
     execute_tasks = True
 
-    cmd_options = (opt_verbosity, opt_reporter)
+    cmd_options = (opt_verbosity, opt_reporter, opt_success, opt_failure)
 
     @staticmethod
     def _find_file_deps(tasks, sel_tasks):
@@ -71,6 +88,9 @@ class Auto(DoitCmdBase):
         """
         started = time.time()
 
+        success_callback = params.pop('success_callback')
+        failure_callback = params.pop('failure_callback')
+
         # execute tasks using Run Command
         arun = Run(task_loader=self.loader)
         params.add_defaults(CmdParse(arun.get_options()).parse([])[0])
@@ -80,6 +100,14 @@ class Auto(DoitCmdBase):
         except InvalidCommand as err: # pragma: no cover
             sys.stderr.write("ERROR: %s\n" % str(err))
             sys.exit(3)
+
+        # user custom callbacks for result
+        if result == 0:
+            if success_callback:
+                call(success_callback, shell=True)
+        else:
+            if failure_callback:
+                call(failure_callback, shell=True)
 
         # get list of files to watch on file system
         watch_files = self._find_file_deps(arun.control.tasks,
