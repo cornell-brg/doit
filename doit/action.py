@@ -402,7 +402,10 @@ class PythonAction(BaseAction):
 
     def __str__(self):
         # get object description excluding runtime memory address
-        return "Python: %s"% str(self.py_callable)[1:].split(' at ')[0]
+        #return "Python: %s"% str(self.py_callable)[1:].split(' at ')[0]
+        # ctorng: Add args to python action str
+        return "Python: %s with args %s" % \
+            ( str(self.py_callable)[1:].split(' at ')[0], str(self.args) )
 
     def __repr__(self):
         return "<PythonAction: '%s'>"% (repr(self.py_callable))

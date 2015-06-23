@@ -245,6 +245,9 @@ class Task(object):
     def _expand_file_dep(self, file_dep):
         """put input into file_dep"""
         for dep in file_dep:
+            # ctorng: interpret '~' as $HOME
+            dep = dep.replace('~', os.environ['HOME'])
+
             if not isinstance(dep, six.string_types):
                 raise InvalidTask("%s. file_dep must be a str got '%r' (%s)" %
                                   (self.name, dep, type(dep)))

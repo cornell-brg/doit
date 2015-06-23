@@ -67,7 +67,8 @@ class List(DoitCmdBase):
                    opt_list_private, opt_list_dependencies, opt_template)
 
 
-    STATUS_MAP = {'ignore': 'I', 'up-to-date': 'U', 'run': 'R'}
+    # ctorng: add coloring to each status
+    STATUS_MAP = {'ignore': '\033[93mI\033[0m', 'up-to-date': '\033[92mU\033[0m', 'run': '\033[91mR\033[0m'}
 
 
     def _print_task(self, template, task, status, list_deps, tasks):

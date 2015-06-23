@@ -57,3 +57,11 @@ class Info(DoitCmdBase):
             if value:
                 self.outstream.write('\n{0}:'.format(attr))
                 printer.pprint(getattr(task, attr))
+        # ctorng: print actions too
+        if task.actions:
+            self.outstream.write('\n{0}:\n'.format('actions'))
+            for action in task.actions:
+              try: # CmdActions can be expanded
+                self.outstream.write( '. %s\n' % action.expand_action() )
+              except AttributeError: # PythonActions cannot
+                self.outstream.write( '. %s\n' % str(action) )
