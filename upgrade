@@ -1,0 +1,18 @@
+#! /usr/bin/env bash
+
+remote=git@github.com:pydoit/doit.git
+
+echo \(1\) Listing current remotes:
+git remote -v
+echo
+
+echo \(2\) Adding $remote
+git remote add upstream $remote
+echo
+
+echo \(3\) Fetching upstream
+git fetch upstream
+echo
+
+echo \(4\) Upgrading with merge from upstream/master
+git merge upstream/master
