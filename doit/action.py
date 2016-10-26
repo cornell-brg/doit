@@ -252,6 +252,14 @@ class CmdAction(BaseAction):
         if self.task.dep_changed is not None:
             subs_dict['changed'] = " ".join(self.task.dep_changed)
         # task option parameters
+
+        # ctorng: A clean release 0.29.0 has a bug where task.options is
+        # not initialized here. The call to
+        # subs_dict.update(self.task.options) will die since
+        # self.task.options is "None" by default. I fix this here by
+        # calling the task's init method.
+        self.task.init_options()
+
         subs_dict.update(self.task.options)
         # convert postional parameters from list space-separated string
         if self.task.pos_arg:
