@@ -1,12 +1,27 @@
 """Control tasks execution order"""
 import fnmatch
 from collections import deque
+from collections import OrderedDict
 import re
 import six
 
 from .exceptions import InvalidTask, InvalidCommand, InvalidDodoFile
+from .cmdparse import TaskParse, CmdOption
 from .task import Task, DelayedLoaded
 from .loader import generate_tasks
+
+
+class RegexGroup(object):
+    '''Helper to keep track of all delayed-tasks which regexp target
+    matches the target specified from command line.
+    '''
+    def __init__(self, target, tasks):
+        # target name specified in command line
+        self.target = target
+        # set of delayed-tasks names (string)
+        self.tasks = tasks
+        # keep track if the target was already found
+        self.found = False
 
 
 class TaskControl(object):
@@ -27,11 +42,8 @@ class TaskControl(object):
                           Value: task_name
     """
 
-    # prefix string used as name of intermediate tasks that match regex targets
-    REGEX_TARGET_PREFIX = '_regex_target'
-
     def __init__(self, task_list, auto_delayed_regex=False):
-        self.tasks = {}
+        self.tasks = OrderedDict()
         self.targets = {}
         self.auto_delayed_regex = auto_delayed_regex
 
@@ -145,7 +157,8 @@ class TaskControl(object):
                 # parse task_selection
                 the_task = self.tasks[f_name]
                 # remaining items are other tasks not positional options
-                the_task.options, seq = the_task.taskcmd.parse(seq)
+                taskcmd = TaskParse([CmdOption(opt) for opt in the_task.params])
+                the_task.options, seq = taskcmd.parse(seq)
                 # if task takes positional parameters set all as pos_arg_val
                 if the_task.pos_arg is not None:
                     the_task.pos_arg_val = seq
@@ -190,28 +203,34 @@ class TaskControl(object):
             basename = filter_.split(':', 1)[0]
             if basename in self.tasks:
                 loader = self.tasks[basename].loader
+                if not loader:
+                    raise InvalidCommand(not_found=filter_)
                 loader.basename = basename
                 self.tasks[filter_] = Task(filter_, None, loader=loader)
                 selected_task.append(filter_)
                 continue
 
             # check if target matches any regex
-            delayed_matched = []
+            delayed_matched = []  # list of Task
             for task in list(self.tasks.values()):
-                if ((not task.loader) or
-                    task.name.startswith(TaskControl.REGEX_TARGET_PREFIX)):
+                if not task.loader:
+                    continue
+                if task.name.startswith('_regex_target'):
                     continue
                 if task.loader.target_regex:
                     if re.match(task.loader.target_regex, filter_):
                         delayed_matched.append(task)
                 elif self.auto_delayed_regex:
                     delayed_matched.append(task)
+            delayed_matched_names = [t.name for t in delayed_matched]
+            regex_group = RegexGroup(filter_, set(delayed_matched_names))
 
+            # create extra tasks to load delayed tasks matched by regex
             for task in delayed_matched:
                 loader = task.loader
                 loader.basename = task.name
-                name = '{}_{}:{}'.format(TaskControl.REGEX_TARGET_PREFIX,
-                                         filter_, task.name)
+                name = '{}_{}:{}'.format('_regex_target', filter_, task.name)
+                loader.regex_groups[name] = regex_group
                 self.tasks[name] = Task(name, None,
                                         loader=loader,
                                         file_dep=[filter_])
@@ -219,10 +238,7 @@ class TaskControl(object):
 
             if not delayed_matched:
                 # not found
-                msg = ('cmd `run` invalid parameter: "%s".' +
-                       ' Must be a task, or a target.\n' +
-                       'Type "doit list" to see available tasks')
-                raise InvalidCommand(msg % filter_)
+                raise InvalidCommand(not_found=filter_)
         return selected_task
 
 
@@ -254,7 +270,7 @@ class ExecNode(object):
     """Each task will have an instace of this
     This used to keep track of waiting events and the generator for dep nodes
 
-    @ivar run_status (str): contains the result of Dependency.get_status
+    @ivar run_status (str): contains the result of Dependency.get_status().status
             modified by runner, value can be:
            - None: not processed yet
            - run: task is selected to be executed (it might be running or
@@ -411,6 +427,13 @@ class TaskDispatcher(object):
         """
         this_task = node.task
 
+        # skip this task if task belongs to a regex_group that already
+        # executed the task used to build the given target
+        if this_task.loader:
+            regex_group = this_task.loader.regex_groups.get(this_task.name, None)
+            if regex_group and regex_group.found:
+                return
+
         # add calc_dep & task_dep until all processed
         # calc_dep may add more deps so need to loop until nothing left
         while True:
@@ -451,13 +474,24 @@ class TaskDispatcher(object):
             # check itself for implicit dep (used by regex_target)
             TaskControl.add_implicit_task_dep(
                 self.targets, this_task, this_task.file_dep)
+
             # remove file_dep since generated tasks are not required
             # to really create the target (support multiple matches)
-            if this_task.name.startswith(TaskControl.REGEX_TARGET_PREFIX):
-               this_task.file_dep = {}
+            if regex_group:
+                this_task.file_dep = {}
+                if regex_group.target in self.targets:
+                    regex_group.found = True
+                else:
+                    regex_group.tasks.remove(this_task.loader.basename)
+                    if len(regex_group.tasks) == 0:
+                        # In case no task is left, we cannot find a task
+                        # generating this target. Print an error message!
+                        raise InvalidCommand(not_found=regex_group.target)
+
             # mark this loader to not be executed again
             this_task.loader.created = True
             this_task.loader = DelayedLoaded
+
             # this task was placeholder to execute the loader
             # now it needs to be re-processed with the real task
             yield "reset generator"

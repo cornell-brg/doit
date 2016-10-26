@@ -6,6 +6,8 @@ import os
 import sys
 import inspect
 import six
+from collections import OrderedDict
+from functools import partial
 
 from .cmdparse import CmdOption, TaskParse
 from .exceptions import CatchedException, InvalidTask
@@ -36,12 +38,14 @@ class DelayedLoader(object):
                         will create
     :ivar created: (bool) wheather this creator was already executed or not
     """
-    def __init__(self, creator, executed=None, target_regex=None):
+    def __init__(self, creator, executed=None, target_regex=None, creates=None):
         self.creator = creator
         self.task_dep = executed
-        self.target_regex = target_regex
         self.basename = None
         self.created = False
+        self.target_regex = target_regex
+        self.creates = creates[:] if creates else []
+        self.regex_groups = OrderedDict()  # task_name:RegexGroup
 
 
 # used to indicate that a task had DelayedLoader but was already created
@@ -143,9 +147,8 @@ class Task(object):
         self.check_attr(name, 'watch', watch, self.valid_attr['watch'])
 
         self.name = name
-        self.taskcmd = TaskParse([CmdOption(opt) for opt in params])
         self.params = params # save just for use on command `info`
-        self.options = self._init_options()
+        self.options = None
         self.pos_arg = pos_arg
         self.pos_arg_val = None # to be set when parsing command line
         self.setup_tasks = list(setup)
@@ -290,12 +293,16 @@ class Task(object):
             self._expand_map[dep](self, dep_values)
 
 
-    def _init_options(self):
-        """put default values on options. this will be overwritten, if params
-        options were passed on the command line.
+    def init_options(self):
+        """Put default values on options.
+
+        This will only be used, if params options were not passed
+        on the command line.
         """
-        # ignore positional parameters
-        return self.taskcmd.parse('')[0]
+        if self.options is None:
+            taskcmd = TaskParse([CmdOption(opt) for opt in self.params])
+            # ignore positional parameters
+            self.options = taskcmd.parse('')[0]
 
 
     def _init_getargs(self):
@@ -316,7 +323,7 @@ class Task(object):
             if parts[0] not in self.setup_tasks:
                 check_result.add(parts[0])
 
-        return [result_dep(t) for t in check_result]
+        return [result_dep(t, setup_dep=True) for t in check_result]
 
 
     @staticmethod
@@ -380,6 +387,7 @@ class Task(object):
         """Executes the task.
         @return failure: see CmdAction.execute
         """
+        self.init_options()
         task_stdout, task_stderr = self._get_out_err(out, err, verbosity)
         for action in self.actions:
             action_return = action.execute(task_stdout, task_stderr)
@@ -406,6 +414,7 @@ class Task(object):
         @ivar dryrun (bool): if True clean tasks are not executed
                              (just print out what would be executed)
         """
+        self.init_options()
         # if clean is True remove all targets
         if self._remove_targets is True:
             clean_targets(self, dryrun)
@@ -439,6 +448,17 @@ class Task(object):
     def __repr__(self):
         return "<Task: %s>"% self.name
 
+
+    def __getstate__(self):
+        """remove attributes that never used on process that only execute tasks
+        """
+        to_pickle = self.__dict__.copy()
+        # never executed in sub-process
+        to_pickle['uptodate'] = None
+        to_pickle['value_savers'] = None
+        # can be re-recreated on demand
+        to_pickle['_action_instances'] = None
+        return to_pickle
 
     # when using multiprocessing Tasks are pickled.
     def pickle_safe_dict(self):
@@ -517,18 +537,30 @@ def clean_targets(task, dryrun):
                 os.rmdir(dir_)
 
 
+def _return_param(val):
+    '''just return passed parameter - make a callable from any value'''
+    return val
+
 # uptodate
 class result_dep(UptodateCalculator):
     """check if result of the given task was modified
     """
-    def __init__(self, dep_task_name):
+    def __init__(self, dep_task_name, setup_dep=False):
+        '''
+        :param setup_dep: controls if dependent task is task_dep or setup
+        '''
         self.dep_name = dep_task_name
+        self.setup_dep = setup_dep
         self.result_name = '_result:%s' % self.dep_name
 
     def configure_task(self, task):
         """to be called by doit when create the task"""
         # result_dep creates an implicit task_dep
-        task.setup_tasks.append(self.dep_name)
+        if self.setup_dep:
+            task.setup_tasks.append(self.dep_name)
+        else:
+            task.task_dep.append(self.dep_name)
+
 
     def _result_single(self):
         """get result from a single task"""
@@ -552,7 +584,8 @@ class result_dep(UptodateCalculator):
             dep_result = self._result_single()
         else:
             dep_result = self._result_group(dep_task)
-        task.value_savers.append(lambda: {self.result_name: dep_result})
+        func = partial(_return_param, {self.result_name: dep_result})
+        task.value_savers.append(func)
 
         last_success = values.get(self.result_name)
         if last_success is None:

@@ -4,6 +4,7 @@ import os
 import hashlib
 import subprocess
 import inspect
+from collections import defaultdict
 import six
 if six.PY3: # pragma: no cover
     from dbm import dumb
@@ -26,11 +27,6 @@ import sqlite3
 
 
 class DatabaseException(Exception):
-    """Exception class for whatever backend exception"""
-    pass
-
-
-class DependencyException(Exception):
     """Exception class for whatever backend exception"""
     pass
 
@@ -264,6 +260,8 @@ class SqliteDB(object):
     def __init__(self, name):
         self.name = name
         self._conn = self._sqlite3(self.name)
+        self._cache = {}
+        self._dirty = set()
 
     @staticmethod
     def _sqlite3(name):
@@ -283,7 +281,7 @@ class SqliteDB(object):
         conn = sqlite3.connect(
             name,
             detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES,
-            isolation_level=None)
+            isolation_level='DEFERRED')
         conn.row_factory = dict_factory
         sqlscript = """
             create table if not exists doit (
@@ -308,8 +306,11 @@ class SqliteDB(object):
 
         @return: (string) or (None) if entry not found
         """
-        data = self._get_task_data(task_id)
-        return data.get(dependency, None)
+        if task_id in self._cache:
+            return self._cache[task_id].get(dependency, None)
+        else:
+            data = self._cache[task_id] = self._get_task_data(task_id)
+            return data.get(dependency, None)
 
     def _get_task_data(self, task_id):
         data = self._conn.execute('select task_data from doit where task_id=?',
@@ -318,12 +319,15 @@ class SqliteDB(object):
 
     def set(self, task_id, dependency, value):
         """Store value in the DB."""
-        task_data = self._get_task_data(task_id)
-        task_data[dependency] = value
-        self._conn.execute('insert or replace into doit values (?,?)',
-                           (task_id, task_data))
+        if task_id not in self._cache:
+            self._cache[task_id] = {}
+        self._cache[task_id][dependency] = value
+        self._dirty.add(task_id)
+
 
     def in_(self, task_id):
+        if task_id in self._cache:
+            return True
         if self._conn.execute('select task_id from doit where task_id=?',
                               (task_id,)).fetchone():
             return True
@@ -331,16 +335,26 @@ class SqliteDB(object):
 
     def dump(self):
         """save/close sqlite3 DB file"""
+        for task_id in self._dirty:
+            self._conn.execute('insert or replace into doit values (?,?)',
+                               (task_id, json.dumps(self._cache[task_id])))
         self._conn.commit()
         self._conn.close()
+        self._dirty = set()
 
     def remove(self, task_id):
         """remove saved dependecies from DB for taskId"""
+        if task_id in self._cache:
+            del self._cache[task_id]
+        if task_id in self._dirty:
+            self._dirty.remove(task_id)
         self._conn.execute('delete from doit where task_id=?', (task_id,))
 
     def remove_all(self):
         """remove saved dependecies from DB for all task"""
         self._conn.execute('delete from doit')
+        self._cache = {}
+        self._dirty = set()
 
 
 class FileChangedChecker(object):
@@ -424,6 +438,43 @@ class TimestampChecker(FileChangedChecker):
 # name of checkers class available
 CHECKERS = {'md5': MD5Checker,
             'timestamp': TimestampChecker}
+
+
+class DependencyStatus(object):
+    """Result object for Dependency.get_status.
+
+    @ivar status: (str) one of "run", "up-to-date" or "error"
+    """
+
+    def __init__(self, get_log):
+        self.get_log = get_log
+        self.status = 'up-to-date'
+        # save reason task is not up-to-date
+        self.reasons = defaultdict(list)
+        self.error_reason = None
+
+    def add_reason(self, reason, arg, status='run'):
+        """sets state and append reason for not being up-to-date
+        :return boolean: processing should be interrupted
+        """
+        self.status = status
+        if self.get_log:
+            self.reasons[reason].append(arg)
+        return not self.get_log
+
+    def set_reason(self, reason, arg):
+        """sets state and reason for not being up-to-date
+        :return boolean: processing should be interrupted
+        """
+        self.status = 'run'
+        if self.get_log:
+            self.reasons[reason] = arg
+        return not self.get_log
+
+    def get_error_message(self):
+        '''return str with error message'''
+        return self.error_reason
+
 
 
 class Dependency(object):
@@ -527,8 +578,7 @@ class Dependency(object):
         """check if task is marked to be ignored"""
         return self._get(task.name, "ignore:")
 
-    # TODO add option to log this
-    def get_status(self, task, tasks_dict):
+    def get_status(self, task, tasks_dict, get_log=False):
         """Check if task is up to date. set task.dep_changed
 
         If the checker class changed since the previous run, the task is
@@ -536,13 +586,17 @@ class Dependency(object):
 
         @param task: (Task)
         @param tasks_dict: (dict: Task) passed to objects used on uptodate
-        @return: (str) one of up-to-date, run
+        @param get_log: (bool) if True, adds all reasons to the return
+                               object why this file will be rebuild.
+        @return: (DependencyStatus) a status object with possible status
+                                    values up-to-date, run or error
 
         task.dep_changed (list-strings): file-dependencies that are not
         up-to-date if task not up-to-date because of a target, returned value
         will contain all file-dependencies reagrdless they are up-to-date
         or not.
         """
+        result = DependencyStatus(get_log)
         task.dep_changed = []
 
         # check uptodate bool/callables
@@ -586,36 +640,47 @@ class Dependency(object):
             if uptodate_result is None:
                 continue
             uptodate_result_list.append(uptodate_result)
+            if not uptodate_result:
+                result.add_reason('uptodate_false', (utd, utd_args, utd_kwargs))
 
         # any uptodate check is false
-        if not all(uptodate_result_list):
-            return 'run'
+        if not get_log and result.status == 'run':
+            return result
 
         # no dependencies means it is never up to date.
         if not (task.file_dep or uptodate_result_list):
-            return 'run'
+            if result.set_reason('has_no_dependencies', True):
+                return result
+
 
         # if target file is not there, task is not up to date
         for targ in task.targets:
             if not os.path.exists(targ):
                 task.dep_changed = list(task.file_dep)
-                return 'run'
+                if result.add_reason('missing_target', targ):
+                    return result
 
         # check for modified file_dep checker
         previous = self._get(task.name, 'checker:')
-        if previous and previous != self.checker.__class__.__name__:
+        checker_name = self.checker.__class__.__name__
+        if previous and previous != checker_name:
             task.dep_changed = list(task.file_dep)
             # remove all saved values otherwise they might be re-used by
             # some optmization on MD5Checker.get_state()
             self.remove(task.name)
-            return 'run'
+            if result.set_reason('checker_changed', (previous, checker_name)):
+                return result
 
         # check for modified file_dep
         previous = self._get(task.name, 'deps:')
-        if previous and set(previous) != task.file_dep:
-            status = 'run'
-        else:
-            status = 'up-to-date'  # initial assumption
+        previous_set = set(previous) if previous else None
+        if previous_set and previous_set != task.file_dep:
+            if get_log:
+                added_files = sorted(list(task.file_dep - previous_set))
+                removed_files = sorted(list(previous_set - task.file_dep))
+                result.set_reason('added_file_dep', added_files)
+                result.set_reason('removed_file_dep', removed_files)
+            result.status = 'run'
 
         # list of file_dep that changed
         check_modified = self.checker.check_modified
@@ -625,15 +690,19 @@ class Dependency(object):
             try:
                 file_stat = os.stat(dep)
             except OSError:
-                raise DependencyException("Dependent file '{}' does not exist."
-                                          .format(dep))
-            if state is None or check_modified(dep, file_stat, state):
-                changed.append(dep)
-        if len(changed) > 0:
-            status = 'run'
+                error_msg = "Dependent file '{}' does not exist.".format(dep)
+                result.error_reason = error_msg.format(dep)
+                if result.add_reason('missing_file_dep', dep, 'error'):
+                    return result
+            else:
+                if state is None or check_modified(dep, file_stat, state):
+                    changed.append(dep)
+        task.dep_changed = changed
 
-        task.dep_changed = changed  # FIXME create a separate function for this
-        return status
+        if len(changed) > 0:
+            result.set_reason('changed_file_dep', changed)
+
+        return result
 
 
 

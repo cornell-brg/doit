@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+import textwrap
 import locale
 locale # quiet pyflakes
 
@@ -98,14 +99,14 @@ class TestCmdActionParams(object):
         command = 'python -c "import os; print(os.getcwd())"'
         my_action = action.CmdAction(command, cwd=path.strpath)
         my_action.execute()
-        assert path + "\n" == my_action.out, repr(my_action.out)
+        assert path + os.linesep == my_action.out, repr(my_action.out)
 
     def test_noPathSet(self, tmpdir):
         path = tmpdir.mkdir("foo")
         command = 'python -c "import os; print(os.getcwd())"'
         my_action = action.CmdAction(command)
         my_action.execute()
-        assert path.strpath + "\n" != my_action.out, repr(my_action.out)
+        assert path.strpath + os.linesep != my_action.out, repr(my_action.out)
 
 
 class TestCmdVerbosity(object):
@@ -231,7 +232,7 @@ class TestCmd_print_process_output(object):
         capture = StringIO()
         my_action._print_process_output(Mock(), not_unicode, capture, realtime)
         # get the replacement char
-        expected = '�' if six.PY3 else unicode('�', 'utf-8')
+        expected = '�' if six.PY3 else '�'.decode('utf-8')
         assert expected == capture.getvalue()
 
     def test_non_unicode_string_ok(self):
@@ -242,7 +243,7 @@ class TestCmd_print_process_output(object):
         capture = StringIO()
         my_action._print_process_output(Mock(), not_unicode, capture, realtime)
         # get the correct char from latin-1 encoding
-        expected = '©' if six.PY3 else unicode('©', 'utf-8')
+        expected = '©' if six.PY3 else '©'.decode('utf-8')
         assert expected == capture.getvalue()
 
 
@@ -646,6 +647,38 @@ class TestPythonActionPrepareKwargsMeta(object):
         my_action = action.PythonAction(py_callable, task=task)
         my_action.execute()
         assert ['123'] == got, repr(got)
+
+    @pytest.mark.skipif('six.PY2')
+    def test_kwonlyargs_minimal(self, task_depchanged):  # pragma: no cover
+        got = []
+        scope = {'got': got}
+        exec(textwrap.dedent('''
+            def py_callable(*args, kwonly=None):
+                got.append(args)
+                got.append(kwonly)
+        '''), scope)
+        my_action = action.PythonAction(scope['py_callable'],
+                                        (1, 2, 3), {'kwonly': 4},
+                                        task=task_depchanged)
+        my_action.execute()
+        assert [(1, 2, 3), 4] == got, repr(got)
+
+    @pytest.mark.skipif('six.PY2')
+    def test_kwonlyargs_full(self, task_depchanged):  # pragma: no cover
+        got = []
+        scope = {'got': got}
+        exec(textwrap.dedent('''
+            def py_callable(pos, *args, kwonly=None, **kwargs):
+                got.append(pos)
+                got.append(args)
+                got.append(kwonly)
+                got.append(kwargs['foo'])
+        '''), scope)
+        my_action = action.PythonAction(scope['py_callable'],
+                                        [1,2,3], {'kwonly': 4, 'foo': 5},
+                                        task=task_depchanged)
+        my_action.execute()
+        assert [1, (2, 3), 4, 5] == got, repr(got)
 
 ##############
 

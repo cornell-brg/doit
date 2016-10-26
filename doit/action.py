@@ -40,10 +40,21 @@ class BaseAction(object):
         if not task:
             return kwargs
 
-        try:
-            argspec = inspect.getargspec(func)
-        except TypeError: # a callable object, not a function
-            argspec = inspect.getargspec(func.__call__)
+        if six.PY2:
+            try:
+                argspec = inspect.getargspec(func)
+            except TypeError: # a callable object, not a function
+                argspec = inspect.getargspec(func.__call__)
+            func_has_kwargs = argspec.keywords is not None
+        else: # pragma: no cover
+            try:
+                argspec = inspect.getfullargspec(func)
+            except TypeError: # a callable object, not a function
+                # since py3.4 this is not required anymore because
+                # getfullargspec deals with any callable
+                argspec = inspect.getfullargspec(func.__call__)
+            func_has_kwargs = argspec.varkw is not None
+
         # use task meta information as extra_args
         meta_args = {
             'task': task,
@@ -79,7 +90,7 @@ class BaseAction(object):
                     kwargs[key] = extra_args[key]
 
             # if function has **kwargs include extra_arg on it
-            elif argspec.keywords and key not in kwargs:
+            elif func_has_kwargs and key not in kwargs:
                 kwargs[key] = extra_args[key]
         return kwargs
 
@@ -157,7 +168,7 @@ class CmdAction(BaseAction):
                 break
             capture.write(line)
             if realtime:
-                if sys.version > '3': # pragma: no cover
+                if six.PY3: # pragma: no cover
                     realtime.write(line)
                 else:
                     realtime.write(line.encode(encoding))

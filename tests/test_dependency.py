@@ -11,6 +11,7 @@ from doit.dependency import get_md5, get_file_md5
 from doit.dependency import DbmDB, JsonDB, SqliteDB, Dependency
 from doit.dependency import DatabaseException, UptodateCalculator
 from doit.dependency import FileChangedChecker, MD5Checker, TimestampChecker
+from doit.dependency import DependencyStatus
 from .conftest import get_abspath, depfile
 
 #path to test folder
@@ -335,6 +336,43 @@ class TestTimestampChecker(object):
         assert checker.check_modified(dependency1, file_stat, state+1)
 
 
+class TestDependencyStatus(object):
+    def test_add_reason(self):
+        result = DependencyStatus(True)
+        assert 'up-to-date' == result.status
+        assert not result.add_reason('changed_file_dep', 'f1')
+        assert 'run' == result.status
+        assert not result.add_reason('changed_file_dep', 'f2')
+        assert ['f1', 'f2'] == result.reasons['changed_file_dep']
+
+    def test_add_reason_error(self):
+        result = DependencyStatus(True)
+        assert 'up-to-date' == result.status
+        assert not result.add_reason('missing_file_dep', 'f1', 'error')
+        assert 'error' == result.status
+        assert ['f1'] == result.reasons['missing_file_dep']
+
+    def test_set_reason(self):
+        result = DependencyStatus(True)
+        assert 'up-to-date' == result.status
+        assert not result.set_reason('has_no_dependencies', True)
+        assert 'run' == result.status
+        assert True == result.reasons['has_no_dependencies']
+
+    def test_no_log(self):
+        result = DependencyStatus(False)
+        assert 'up-to-date' == result.status
+        assert result.set_reason('has_no_dependencies', True)
+        assert 'run' == result.status
+
+    def test_get_error_message(self):
+        result = DependencyStatus(False)
+        assert None == result.get_error_message()
+        result.error_reason = 'foo xxx'
+        assert 'foo xxx' == result.get_error_message()
+
+
+
 class TestGetStatus(object):
 
     def test_ignore(self, pdepfile):
@@ -356,12 +394,12 @@ class TestGetStatus(object):
         t1 = Task("t1", None, dependencies)
 
         # first time execute
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert dependencies == t1.dep_changed
 
         # second time no
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed
 
         # FIXME - mock timestamp
@@ -372,7 +410,7 @@ class TestGetStatus(object):
         ff.close()
 
         # execute again
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert dependencies == t1.dep_changed
 
     def test_fileDependencies_changed(self, pdepfile):
@@ -390,48 +428,76 @@ class TestGetStatus(object):
         t1 = Task("t1", None, dependencies)
 
         # first time execute
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert sorted(dependencies) == sorted(t1.dep_changed)
 
         # second time no
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed
 
         # remove dependency filePath2
         t1 = Task("t1", None, [filePath])
         # execute again
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed
+
+
+    def test_fileDependencies_changed_get_log(self, pdepfile):
+        filePath = get_abspath("data/dependency1")
+        ff = open(filePath,"w")
+        ff.write("part1")
+        ff.close()
+
+        filePath2 = get_abspath("data/dependency2")
+        ff = open(filePath,"w")
+        ff.write("part1")
+        ff.close()
+
+        t1 = Task("t1", None, [filePath])
+
+        # first time execute
+        result = pdepfile.get_status(t1, {}, get_log=True)
+        assert 'run' == result.status
+        assert [filePath] == t1.dep_changed
+        pdepfile.save_success(t1)
+
+        # second time
+        t1b = Task("t1", None, [filePath2])
+        result = pdepfile.get_status(t1b, {}, get_log=True)
+        assert 'run' == result.status
+        assert [filePath2] == t1b.dep_changed
+        assert [filePath] == result.reasons['removed_file_dep']
+        assert [filePath2] == result.reasons['added_file_dep']
 
 
     def test_file_dependency_not_exist(self, pdepfile):
         filePath = get_abspath("data/dependency_not_exist")
         t1 = Task("t1", None, [filePath])
-        pytest.raises(Exception, pdepfile.get_status, t1, {})
+        assert 'error' == pdepfile.get_status(t1, {}).status
 
 
     def test_change_checker(self, pdepfile, dependency1):
         t1 = Task("taskId_X", None, [dependency1])
         pdepfile.checker = TimestampChecker()
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
         # change of checker force `run` again
         pdepfile.checker = MD5Checker()
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
 
 
     # if there is no dependency the task is always executed
     def test_noDependency(self, pdepfile):
         t1 = Task("t1", None)
         # first time execute
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed
         # second too
         pdepfile.save_success(t1)
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed
 
 
@@ -444,18 +510,18 @@ class TestGetStatus(object):
         t1 = Task("t1", None, file_dep=[filePath], uptodate=[False])
 
         # first time execute
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed
 
         # second time execute too
         pdepfile.save_success(t1)
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed
 
     def test_UptodateTrue(self, pdepfile):
         t1 = Task("t1", None, uptodate=[True])
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
 
     def test_UptodateNone(self, pdepfile):
         filePath = get_abspath("data/dependency1")
@@ -466,12 +532,12 @@ class TestGetStatus(object):
         t1 = Task("t1", None, file_dep=[filePath], uptodate=[None])
 
         # first time execute
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert [filePath] == t1.dep_changed
 
         # second time execute too
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
 
 
     def test_UptodateFunction_True(self, pdepfile):
@@ -480,7 +546,7 @@ class TestGetStatus(object):
             return True
         t1 = Task("t1", None, uptodate=[check])
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
 
     def test_UptodateFunction_False(self, pdepfile):
         filePath = get_abspath("data/dependency1")
@@ -492,19 +558,19 @@ class TestGetStatus(object):
         t1 = Task("t1", None, file_dep=[filePath], uptodate=[check])
 
         # first time execute
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed
 
         # second time execute too
         pdepfile.save_success(t1)
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed
 
     def test_UptodateFunction_without_args_True(self, pdepfile):
         def check(): return True
         t1 = Task("t1", None, uptodate=[check])
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
 
     def test_uptodate_call_all_even_if_some_False(self, pdepfile):
         checks = []
@@ -513,7 +579,7 @@ class TestGetStatus(object):
             return False
         t1 = Task("t1", None, uptodate=[check, check])
         #pdepfile.save_success(t1)
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert 2 == len(checks)
 
 
@@ -523,7 +589,7 @@ class TestGetStatus(object):
             return control>30
         t1 = Task("t1", None, uptodate=[ (check, [34]) ])
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
 
     def test_UptodateCallable_True(self, pdepfile):
         class MyChecker(object):
@@ -532,7 +598,7 @@ class TestGetStatus(object):
                 return True
         t1 = Task("t1", None, uptodate=[ MyChecker() ])
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
 
     def test_UptodateMethod_True(self, pdepfile):
         class MyChecker(object):
@@ -541,7 +607,7 @@ class TestGetStatus(object):
                 return True
         t1 = Task("t1", None, uptodate=[ MyChecker().check ])
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
 
     def test_UptodateCallable_added_attributes(self, pdepfile):
         task_dict = "fake dict"
@@ -554,17 +620,17 @@ class TestGetStatus(object):
 
         check = My_uptodate()
         t1 = Task("t1", None, uptodate=[check])
-        assert 'up-to-date' == pdepfile.get_status(t1, task_dict)
+        assert 'up-to-date' == pdepfile.get_status(t1, task_dict).status
 
     def test_UptodateCommand_True(self, pdepfile):
         t1 = Task("t1", None, uptodate=[PROGRAM])
         pdepfile.save_success(t1)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
 
     def test_UptodateCommand_False(self, pdepfile):
         t1 = Task("t1", None, uptodate=[PROGRAM + ' please fail'])
         pdepfile.save_success(t1)
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
 
 
     # if target file does not exist, task is outdated.
@@ -575,7 +641,7 @@ class TestGetStatus(object):
 
         t1 = Task("task x", None, [dependency1], [target])
         pdepfile.save_success(t1)
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert [dependency1] == t1.dep_changed
 
 
@@ -591,7 +657,7 @@ class TestGetStatus(object):
 
         pdepfile.save_success(t1)
         # up-to-date because target exist
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed
 
 
@@ -604,9 +670,9 @@ class TestGetStatus(object):
         t1 = Task("task x", None, deps, [folderPath])
         pdepfile.save_success(t1)
 
-        assert 'run' == pdepfile.get_status(t1, {})
+        assert 'run' == pdepfile.get_status(t1, {}).status
         assert deps == t1.dep_changed
         # create folder. task is up-to-date
         os.mkdir(folderPath)
-        assert 'up-to-date' == pdepfile.get_status(t1, {})
+        assert 'up-to-date' == pdepfile.get_status(t1, {}).status
         assert [] == t1.dep_changed

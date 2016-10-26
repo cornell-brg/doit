@@ -1,5 +1,7 @@
 import os
+import pickle
 from multiprocessing import Queue
+import platform
 import six
 
 import pytest
@@ -7,10 +9,13 @@ from mock import Mock
 
 from doit.exceptions import InvalidTask
 from doit.dependency import DbmDB, Dependency
+from doit.reporter import ConsoleReporter
 from doit.task import Task, DelayedLoader
 from doit.control import TaskDispatcher, ExecNode
 from doit import runner
 
+
+PLAT_IMPL = platform.python_implementation()
 
 # sample actions
 def my_print(*args):
@@ -108,10 +113,13 @@ class TestRunner_SelectTask(object):
         assert not reporter.log
 
     def test_alwaysExecute(self, reporter, dep_manager):
-        t1 = Task("taskX", [(my_print, ["out a"] )])
+        t1 = Task("taskX", [(my_print, ["out a"] )], uptodate=[True])
         my_runner = runner.Runner(dep_manager, reporter, always_execute=True)
         my_runner.dep_manager.save_success(t1)
-        assert True == my_runner.select_task(ExecNode(t1, None), {})
+        n1 = ExecNode(t1, None)
+        assert True == my_runner.select_task(n1, {})
+        # run_status is set to run even if task is up-to-date
+        assert n1.run_status == 'run'
         assert ('start', t1) == reporter.log.pop(0)
         assert not reporter.log
 
@@ -158,7 +166,6 @@ class TestRunner_SelectTask(object):
         assert ('success', t1) == reporter.log.pop(0)
 
         # t2.options are set on select_task
-        assert {} == t2.options
         assert True == my_runner.select_task(n2, tasks_dict)
         assert not reporter.log
         assert {'my_x': 1} == t2.options
@@ -202,7 +209,6 @@ class TestRunner_SelectTask(object):
         my_runner.process_task_result(n1, t1_result)
 
         # t2.options are set on _get_task_args
-        assert {} == t2.options
         my_runner._get_task_args(t2, tasks_dict)
         assert {'my_x': {'x':1}} == t2.options
 
@@ -218,7 +224,6 @@ class TestRunner_SelectTask(object):
         my_runner.process_task_result(ExecNode(t1a, None), t1a_result)
 
         # t2.options are set on _get_task_args
-        assert {} == t2.options
         my_runner._get_task_args(t2, tasks_dict)
         assert {'my_x': {'a':{'x':1}} } == t2.options
 
@@ -235,7 +240,6 @@ class TestRunner_SelectTask(object):
         my_runner.process_task_result(ExecNode(t1a, None), t1a_result)
 
         # t2.options are set on _get_task_args
-        assert {} == t2.options
         my_runner._get_task_args(t2, tasks_dict)
         assert {'my_x': {'a':1} } == t2.options
 
@@ -249,6 +253,7 @@ class TestTask_Teardown(object):
         t1 = Task('t1', [], teardown=[(touch,)])
         my_runner = runner.Runner(dep_manager, reporter)
         my_runner.teardown_list = [t1]
+        t1.execute()
         my_runner.teardown()
         assert 1 == len(touched)
         assert ('teardown', t1) == reporter.log.pop(0)
@@ -260,6 +265,8 @@ class TestTask_Teardown(object):
         t2 = Task('t2', [], teardown=[do_nothing])
         my_runner = runner.Runner(dep_manager, reporter)
         my_runner.teardown_list = [t1, t2]
+        t1.execute()
+        t2.execute()
         my_runner.teardown()
         assert ('teardown', t2) == reporter.log.pop(0)
         assert ('teardown', t1) == reporter.log.pop(0)
@@ -272,6 +279,8 @@ class TestTask_Teardown(object):
         t2 = Task('t2', [], teardown=[(raise_something,['t2 blow'])])
         my_runner = runner.Runner(dep_manager, reporter)
         my_runner.teardown_list = [t1, t2]
+        t1.execute()
+        t2.execute()
         my_runner.teardown()
         assert ('teardown', t2) == reporter.log.pop(0)
         assert ('cleanup_error',) == reporter.log.pop(0)
@@ -304,8 +313,21 @@ def RunnerClass(request):
     return request.param
 
 
+# function used on actions, define here to make sure they are pickable
 def ok(): return "ok"
 def ok2(): return "different"
+def my_action():
+    import sys
+    sys.stdout.write('out here')
+    sys.stderr.write('err here')
+    return {'bb': 5}
+def use_args(arg1):
+    six.print_(arg1)
+def make_args():
+    return {'myarg':1}
+def action_add_filedep(task, extra_dep):
+    task.file_dep.add(extra_dep)
+
 
 class TestRunner_run_tasks(object):
 
@@ -334,11 +356,6 @@ class TestRunner_run_tasks(object):
 
     # test result, value, out, err are saved into task
     def test_result(self, reporter, RunnerClass, dep_manager):
-        def my_action():
-            import sys
-            sys.stdout.write('out here')
-            sys.stderr.write('err here')
-            return {'bb': 5}
         task = Task("taskY", [my_action] )
         my_runner = RunnerClass(dep_manager, reporter)
         assert None == task.result
@@ -381,13 +398,13 @@ class TestRunner_run_tasks(object):
 
     # when successful dependencies are updated
     def test_updateDependencies(self, reporter, RunnerClass, depfile_name):
-        depPath = os.path.join(os.path.dirname(__file__),"data/dependency1")
+        depPath = os.path.join(os.path.dirname(__file__), "data", "dependency1")
         ff = open(depPath,"a")
         ff.write("xxx")
         ff.close()
         dependencies = [depPath]
 
-        filePath = os.path.join(os.path.dirname(__file__),"data/target")
+        filePath = os.path.join(os.path.dirname(__file__), "data", "target")
         ff = open(filePath,"a")
         ff.write("xxx")
         ff.close()
@@ -472,9 +489,6 @@ class TestRunner_run_tasks(object):
 
 
     def test_getargs(self, reporter, RunnerClass, dep_manager):
-        def use_args(arg1):
-            six.print_(arg1)
-        def make_args(): return {'myarg':1}
         t1 = Task("t1", [(use_args,)], getargs=dict(arg1=('t2','myarg')) )
         t2 = Task("t2", [(make_args,)])
         my_runner = RunnerClass(dep_manager, reporter)
@@ -491,9 +505,9 @@ class TestRunner_run_tasks(object):
 
     def testActionModifiesFiledep(self, reporter, RunnerClass, dep_manager):
         extra_dep = os.path.join(os.path.dirname(__file__), 'sample_md5.txt')
-        def action_add_filedep(task):
-            task.file_dep.add(extra_dep)
-        t1 = Task("t1", [(my_print, ["out a"] ), action_add_filedep] )
+        t1 = Task("t1", [(my_print, ["out a"] ),
+                         (action_add_filedep, (), {'extra_dep': extra_dep})
+                     ] )
         my_runner = RunnerClass(dep_manager, reporter)
         my_runner.run_tasks(TaskDispatcher({'t1':t1}, [], ['t1']))
         assert runner.SUCCESS == my_runner.finish()
@@ -534,10 +548,38 @@ class TestMReporter(object):
 
 
 class TestJobTask(object):
-    def test_not_picklable(self):
-        def non_top_function(): pass
+    def test_closure_is_picklable(self):
+        # can pickle because we use cloudpickle
+        def non_top_function(): return 4
         t1 = Task('t1', [non_top_function])
+        t1p = runner.JobTask(t1).task_pickle
+        t2 = pickle.loads(t1p)
+        assert 4 == t2.actions[0].py_callable()
+
+    @pytest.mark.xfail('PLAT_IMPL == "PyPy"')  # pypy can handle it :)
+    def test_not_picklable_raises_InvalidTask(self):
+        # create a large enough recursive obj so pickle fails
+        d1 = {}
+        last = d1
+        for x in range(400):
+            dn = {'p': last}
+            last = dn
+        d1['p'] = last
+
+        def non_top_function(): pass
+        t1 = Task('t1', [non_top_function, (d1,)])
         pytest.raises(InvalidTask, runner.JobTask, t1)
+
+
+# multiprocessing on Windows requires the whole object to be pickable
+def test_MRunner_pickable(dep_manager):
+    t1 = Task('t1', [])
+    import sys
+    reporter = ConsoleReporter(sys.stdout, {})
+    run = runner.MRunner(dep_manager, reporter)
+    run._run_tasks_init(TaskDispatcher({'t1':t1}, [], ['t1']))
+    # assert nothing is raised
+    pickle.dumps(run)
 
 
 @pytest.mark.skipif('not runner.MRunner.available()')
@@ -677,27 +719,30 @@ class TestMRunner_start_process(object):
         assert isinstance(task_q.get(), runner.JobHold)
 
 
+def non_pickable_creator():
+    return {'basename': 't2', 'actions': [lambda: True]}
+
 class TestMRunner_parallel_run_tasks(object):
 
     @pytest.mark.skipif('not runner.MRunner.available()')
-    def test_task_not_picklabe_multiprocess(self, reporter, dep_manager):
-        def creator():
-            return {'basename': 't2', 'actions': [lambda: 5]}
+    def test_task_cloudpicklabe_multiprocess(self, reporter, dep_manager):
         t1 = Task("t1", [(my_print, ["out a"] )] )
-        t2 = Task("t2", None, loader=DelayedLoader(creator, executed='t1'))
+        t2 = Task("t2", None, loader=DelayedLoader(
+            non_pickable_creator, executed='t1'))
         my_runner = runner.MRunner(dep_manager, reporter)
         dispatcher = TaskDispatcher({'t1':t1, 't2':t2}, [], ['t1', 't2'])
-        pytest.raises(InvalidTask, my_runner.run_tasks, dispatcher)
+        my_runner.run_tasks(dispatcher)
+        assert runner.SUCCESS == my_runner.finish()
 
     def test_task_not_picklabe_thread(self, reporter, dep_manager):
-        def creator():
-            return {'basename': 't2', 'actions': [lambda: True]}
         t1 = Task("t1", [(my_print, ["out a"] )] )
-        t2 = Task("t2", None, loader=DelayedLoader(creator, executed='t1'))
+        t2 = Task("t2", None, loader=DelayedLoader(
+            non_pickable_creator, executed='t1'))
         my_runner = runner.MThreadRunner(dep_manager, reporter)
         dispatcher = TaskDispatcher({'t1':t1, 't2':t2}, [], ['t1', 't2'])
         # threaded code have no problems with closures
         my_runner.run_tasks(dispatcher)
+        assert runner.SUCCESS == my_runner.finish()
         assert ('start', t1) == reporter.log.pop(0), reporter.log
         assert ('execute', t1) == reporter.log.pop(0)
         assert ('success', t1) == reporter.log.pop(0)
@@ -715,7 +760,7 @@ class TestMRunner_execute_task(object):
         task_q.put(runner.JobHold()) # to test
         task_q.put(None) # to terminate function
         result_q = Queue()
-        run.execute_task_subprocess(task_q, result_q)
+        run.execute_task_subprocess(task_q, result_q, reporter.__class__)
         run.finish()
         # nothing was done
         assert result_q.empty()
@@ -728,7 +773,7 @@ class TestMRunner_execute_task(object):
         task_q.put(runner.JobTask(t1)) # to test
         task_q.put(None) # to terminate function
         result_q = Queue()
-        run.execute_task_subprocess(task_q, result_q)
+        run.execute_task_subprocess(task_q, result_q, reporter.__class__)
         run.finish()
         # check result
         assert result_q.get() == {'name': 't1', 'reporter': 'execute_task'}

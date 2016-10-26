@@ -3,13 +3,16 @@
 import sys
 from multiprocessing import Process, Queue as MQueue
 from threading import Thread
+import pickle
+
 import six
 from six.moves import queue, xrange
-import pickle
+import cloudpickle
 
 from .exceptions import InvalidTask, CatchedException
 from .exceptions import TaskFailed, SetupError, DependencyError, UnmetDependency
 from .task import DelayedLoaded
+
 
 # execution result.
 SUCCESS = 0
@@ -69,6 +72,8 @@ class Runner(object):
 
     def _get_task_args(self, task, tasks_dict):
         """get values from other tasks"""
+        task.init_options()
+
         def get_value(task_id, key_name):
             """get single value or dict from task's saved values"""
             if key_name is None:
@@ -121,20 +126,24 @@ class Runner(object):
                 return False
 
             # check if task is up-to-date
-            try:
-                node.run_status = self.dep_manager.get_status(task, tasks_dict)
-            except Exception as exception:
-                msg = "ERROR: Task '%s' checking dependencies" % task.name
-                dep_error = DependencyError(msg, exception)
-                self._handle_task_error(node, dep_error)
+            res = self.dep_manager.get_status(task, tasks_dict)
+            if res.status == 'error':
+                msg = "ERROR: Task '{}' checking dependencies: {}".format(
+                    task.name, res.get_error_message())
+                self._handle_task_error(node, DependencyError(msg))
                 return False
 
-            if not self.always_execute:
-                # if task is up-to-date skip it
-                if node.run_status == 'up-to-date':
-                    self.reporter.skip_uptodate(task)
-                    task.values = self.dep_manager.get_values(task.name)
-                    return False
+            # set node.run_status
+            if self.always_execute:
+                node.run_status = 'run'
+            else:
+                node.run_status = res.status
+
+            # if task is up-to-date skip it
+            if node.run_status == 'up-to-date':
+                self.reporter.skip_uptodate(task)
+                task.values = self.dep_manager.get_values(task.name)
+                return False
 
             if task.setup_tasks:
                 # dont execute now, execute setup first...
@@ -256,7 +265,7 @@ class JobTask(object):
     def __init__(self, task):
         self.name = task.name
         try:
-            self.task_pickle = pickle.dumps(task)
+            self.task_pickle = cloudpickle.dumps(task)
         except pickle.PicklingError as excp:
             msg = """Error on Task: `{}`.
 Task created at execution time that has an attribute than can not be pickled,
@@ -284,13 +293,13 @@ class MReporter(object):
                        'reporter': <reporter-method-name>}
     on runner's 'result_q'
     """
-    def __init__(self, runner, original_reporter):
+    def __init__(self, runner, reporter_cls):
         self.runner = runner
-        self.original_reporter = original_reporter
+        self.reporter_cls = reporter_cls
 
     def __getattr__(self, method_name):
         """substitute any reporter method with a dispatching method"""
-        if not hasattr(self.original_reporter, method_name):
+        if not hasattr(self.reporter_cls, method_name):
             raise AttributeError(method_name)
         def rep_method(task):
             self.runner.result_q.put({'name':task.name,
@@ -332,6 +341,17 @@ class MRunner(Runner):
         self.task_dispatcher = None # TaskDispatcher retrieve tasks
         self.tasks = None    # dict of task instances by name
         self.result_q = None
+
+
+    def __getstate__(self):
+        # multiprocessing on Windows will try to pickle self.
+        # These attributes are actually not used by spawend process so
+        # safe to be removed.
+        pickle_dict = self.__dict__.copy()
+        pickle_dict['reporter'] = None
+        pickle_dict['task_dispatcher'] = None
+        pickle_dict['dep_manager'] = None
+        return pickle_dict
 
     def get_next_job(self, completed):
         """get next task to be dispatched to sub-process
@@ -378,6 +398,25 @@ class MRunner(Runner):
         @param result_q: (multiprocessing.Queue) collect task results
         @return list of Process
         """
+        # #### DEBUG PICKLE ERRORS
+        # # Python3 uses C implementation of pickle
+        # if six.PY2:
+            # Pickler = pickle.Pickler
+        # else:  # pragma no cover
+            # Pickler = pickle._Pickler
+
+        # class MyPickler (Pickler):
+            # def save(self, obj):
+                # print('pickling object {} of type {}'.format(obj, type(obj)))
+                # try:
+                    # Pickler.save(self, obj)
+                # except:
+                    # print('error. skipping...')
+        # from six import BytesIO
+        # pickler = MyPickler(BytesIO())
+        # pickler.dump(self)
+        # ### END DEBUG
+
         proc_list = []
         for _ in xrange(self.num_process):
             next_job = self.get_next_job(None)
@@ -386,7 +425,7 @@ class MRunner(Runner):
             job_q.put(next_job)
             process = self.Child(
                 target=self.execute_task_subprocess,
-                args=(job_q, result_q))
+                args=(job_q, result_q, self.reporter.__class__))
             process.start()
             proc_list.append(process)
         return proc_list
@@ -445,7 +484,7 @@ class MRunner(Runner):
                     job_q.put(next_job)
                 # check for cyclic dependencies
                 assert len(proc_list) > self.free_proc
-        except Exception:
+        except (SystemExit, KeyboardInterrupt, Exception):
             if self.Child == Process:
                 for proc in proc_list:
                     proc.terminate()
@@ -462,7 +501,7 @@ class MRunner(Runner):
             getattr(self.reporter, result['reporter'])(task)
 
 
-    def execute_task_subprocess(self, job_q, result_q):
+    def execute_task_subprocess(self, job_q, result_q, reporter_class):
         """executed on child processes
         @param job_q: task queue,
             * None elements indicate process can terminate
@@ -471,7 +510,7 @@ class MRunner(Runner):
         """
         self.result_q = result_q
         if self.Child == Process:
-            self.reporter = MReporter(self, self.reporter)
+            self.reporter = MReporter(self, reporter_class)
         try:
             while True:
                 job = job_q.get()

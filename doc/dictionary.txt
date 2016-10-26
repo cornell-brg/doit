@@ -73,6 +73,7 @@ Config
 ConsoleReporter
 Ctrl
 DelayedLoader
+DelayedTask
 Dembia
 DoIt
 DoitCmdBase
@@ -103,6 +104,7 @@ PDB
 PYTHONPATH
 Popen
 PyPi
+PyPy
 PythonAction
 PythonInteractiveAction
 Pythonic
@@ -119,6 +121,7 @@ TODO
 TaskError
 TaskFailed
 TaskLoader
+Tpng
 Trento
 UptodateCalculator
 Uz
@@ -129,6 +132,7 @@ ZeroReporter
 a2
 abc
 api
+aplay
 app
 args
 atime
@@ -141,17 +145,20 @@ backends
 backport
 bar'
 basename
+basenames
 bioinformatic
 biomechanics
 bitbucket
 blog
 bool
 c'
+cProfile
 calc
 callables
 cfg
 chdir
 cid
+cloudpickle
 cmd
 cmp
 codebase
@@ -201,8 +208,10 @@ genstandalone
 getargs
 gif
 github
+gitter
 gmail
 google
+gprof2dot
 hardcode
 hashbang
 hashlib
@@ -213,6 +222,7 @@ hggit
 hgrc
 html
 hunspell
+img
 init
 inotify
 interactiveaction
@@ -226,6 +236,7 @@ js
 jsFile
 json
 json'
+kbd
 kwargs
 lelele
 letsdoit
@@ -265,12 +276,14 @@ perl
 picklable
 plugin
 plugins
+png
 popen
 pos
 pos1
 pre
 prev
 programmatically
+pstats
 py
 py'
 py3
@@ -334,6 +347,7 @@ unix
 uptodate
 uptodate'
 utf8
+utm
 virtualenv
 wget
 wildcard
@@ -345,3 +359,4 @@ x'
 xxx
 xyz
 zsh
+

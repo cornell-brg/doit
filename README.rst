@@ -4,18 +4,25 @@ README
 
 .. display some badges
 
-.. image:: https://pypip.in/v/doit/badge.png
+.. image:: https://img.shields.io/pypi/v/doit.svg
         :target: https://pypi.python.org/pypi/doit
 
-.. image:: https://pypip.in/d/doit/badge.png
+.. image:: https://img.shields.io/pypi/dm/doit.svg
         :target: https://pypi.python.org/pypi/doit
 
-.. disable this until i figure out how to debug unstable tests
-  .. image:: https://travis-ci.org/pydoit/doit.png?branch=master
+.. image:: https://travis-ci.org/pydoit/doit.png?branch=master
     :target: https://travis-ci.org/pydoit/doit
+
+.. image:: https://ci.appveyor.com/api/projects/status/f7f97iywo8y7fe4d/branch/master?svg=true
+    :target: https://ci.appveyor.com/project/schettino72/doit/branch/master
 
 .. image:: https://coveralls.io/repos/pydoit/doit/badge.png?branch=master
   :target: https://coveralls.io/r/pydoit/doit?branch=master
+
+
+.. image:: https://badges.gitter.im/Join%20Chat.svg
+  :alt: Join the chat at https://gitter.im/pydoit/doit
+  :target: https://gitter.im/pydoit/doit?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge
 
 
 doit - automation tool
@@ -32,6 +39,7 @@ Project Details
  - Project management on github - https://github.com/pydoit/doit
  - Discussion group - https://groups.google.com/forum/#!forum/python-doit
  - News/twitter - https://twitter.com/py_doit
+ - Plugins, extensions and projects based on doit - https://github.com/pydoit/doit/wiki/powered-by-doit
 
 license
 =======
@@ -95,6 +103,19 @@ from `dev_requirements.txt`::
   (dev)doit$ pip install --editable .
   (dev)doit$ pip install --requirement dev_requirements.txt
 
+.. note::
+
+    Windows developers: Due to a  bug in `wheel` distributions
+    `pytest` must not be installed from a `wheel`.
+
+    e.g.::
+
+      pip install pytest --no-use-wheel
+
+    See for more information:
+
+      - https://github.com/pytest-dev/pytest/issues/749
+      - https://bitbucket.org/pytest-dev/pytest/issues/749/
 
 
 tests
@@ -139,6 +160,15 @@ these words must be added into the file `doc/dictionary.txt`.
 The spell checker currently uses `hunspell`, to install it on debian based
 systems install the hunspell package: `apt-get install hunspell`.
 
+
+profiling
+---------
+
+::
+
+  python -m cProfile -o output.pstats `which doit` list
+
+  gprof2dot -f pstats output.pstats | dot -Tpng -o output.png
 
 contributing
 ==============
