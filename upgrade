@@ -7,12 +7,20 @@ git remote -v
 echo
 
 echo \(2\) Adding $remote
-git remote add upstream $remote
+git remote add vendor $remote
 echo
 
-echo \(3\) Fetching upstream
-git fetch upstream
+echo \(3\) Fetching vendor
+git fetch vendor
 echo
 
-echo \(4\) Upgrading with merge from upstream/master
-git merge upstream/master
+echo \(4\) Upgrade local upstream branch through the vendor
+git checkout upstream
+git merge vendor/master
+echo
+
+echo \(5\) Upgrade local master branch through local upstream branch
+git checkout master
+git merge --squash upstream
+echo
+
